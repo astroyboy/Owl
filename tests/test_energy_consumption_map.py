@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import html
+import io
 import json
 import logging
 import os
@@ -293,6 +295,129 @@ def _render_report(
 """
 
 
+def _csv_leaf_row(
+    meta_code: str,
+    meta_name: str,
+    values_by_point: dict[str, str],
+    values_history_by_point: dict[str, list[Any]],
+) -> list[str]:
+    """Cell text for one leaf, identical to what the HTML table shows."""
+
+    def history_text(point_code: str) -> str:
+        history = values_history_by_point.get(f"{meta_code}::{point_code}") or []
+        return ", ".join(str(item) for item in history) or "--"
+
+    return [
+        meta_name,
+        values_by_point.get(f"{meta_code}::Eptp_1D") or "--",
+        history_text("Eptp_1D"),
+        values_by_point.get(f"{meta_code}::P_RT") or "--",
+        history_text("P_RT"),
+    ]
+
+
+def _csv_node_rows(
+    meta_code: str,
+    node: dict[str, Any],
+    titles: list[str],
+    values_by_point: dict[str, str],
+    values_history_by_point: dict[str, list[Any]],
+) -> list[tuple[list[str], list[str]]]:
+    """(titles, leaf row) pairs for one node, in the same order as the HTML."""
+    meta_name = node.get("metaName")
+    if not isinstance(meta_name, str) or not meta_name:
+        raise ValueError(f"Structure node {meta_code!r} has no metaName")
+    children = node.get("children", [])
+    if not isinstance(children, list):
+        raise ValueError(f"Structure node {meta_code!r} has invalid children")
+    if not children:
+        return [
+            (
+                titles,
+                _csv_leaf_row(
+                    meta_code, meta_name, values_by_point, values_history_by_point
+                ),
+            )
+        ]
+
+    node_titles = [*titles, meta_name]
+    leaf_rows: list[tuple[list[str], list[str]]] = []
+    branch_rows: list[tuple[list[str], list[str]]] = []
+    for child in children:
+        if not isinstance(child, dict):
+            raise ValueError(f"Structure node {meta_code!r} has an invalid child")
+        for child_code, child_node in child.items():
+            if not isinstance(child_node, dict):
+                raise ValueError(
+                    f"Structure node {meta_code!r} has an invalid child node"
+                )
+            grand_children = child_node.get("children", [])
+            if not isinstance(grand_children, list):
+                raise ValueError(f"Structure node {child_code!r} has invalid children")
+            if grand_children:
+                branch_rows.extend(
+                    _csv_node_rows(
+                        child_code,
+                        child_node,
+                        node_titles,
+                        values_by_point,
+                        values_history_by_point,
+                    )
+                )
+            else:
+                child_name = child_node.get("metaName")
+                if not isinstance(child_name, str) or not child_name:
+                    raise ValueError(f"Structure node {child_code!r} has no metaName")
+                leaf_rows.append(
+                    (
+                        node_titles,
+                        _csv_leaf_row(
+                            child_code,
+                            child_name,
+                            values_by_point,
+                            values_history_by_point,
+                        ),
+                    )
+                )
+    return leaf_rows + branch_rows
+
+
+def _render_csv(
+    structure: dict[str, dict[str, Any]],
+    values_by_point: dict[str, str],
+    values_history_by_point: dict[str, list[Any]],
+) -> str:
+    """All report tables as one CSV: one column per title level, then the values."""
+    root_leaf_rows: list[tuple[list[str], list[str]]] = []
+    tree_rows: list[tuple[list[str], list[str]]] = []
+    for meta_code, node in structure.items():
+        rows = _csv_node_rows(
+            meta_code, node, [], values_by_point, values_history_by_point
+        )
+        if node.get("children"):
+            tree_rows.extend(rows)
+        else:
+            root_leaf_rows.extend(rows)
+    all_rows = root_leaf_rows + tree_rows
+
+    depth = max((len(titles) for titles, _ in all_rows), default=0)
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(
+        [f"Level {level}" for level in range(1, depth + 1)]
+        + [
+            "metaName",
+            "Eptp_1D (current)",
+            "Eptp_1D (history)",
+            "P_RT (current)",
+            "P_RT (history)",
+        ]
+    )
+    for titles, values in all_rows:
+        writer.writerow(titles + [""] * (depth - len(titles)) + values)
+    return output.getvalue()
+
+
 @pytest.mark.sungrow
 def test_energy_consumption_map(
     request: pytest.FixtureRequest,
@@ -368,6 +493,14 @@ def test_energy_consumption_map(
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report, encoding="utf-8")
     logger.debug("HTML report: %s", report_path)
+
+    csv_path = report_path.with_suffix(".csv")
+    # utf-8-sig adds a BOM so Excel shows the Chinese titles correctly.
+    csv_path.write_text(
+        _render_csv(structure, values_by_point, values_history_by_point),
+        encoding="utf-8-sig",
+    )
+    logger.debug("CSV report: %s", csv_path)
 
 @pytest.mark.skip(reason="This test is for debugging and printing API responses, not for automated testing.")
 @pytest.mark.sungrow
