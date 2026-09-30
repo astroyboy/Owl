@@ -11,8 +11,6 @@ import sys
 from typing import Any
 
 import pytest
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"utils"))
-
 from owl.api import collect_leaf_nodes
 
 logger = logging.getLogger(__name__)
@@ -266,10 +264,12 @@ def _render_report(
 def test_energy_consumption_map(
     request: pytest.FixtureRequest,
     sungrow_reference_data: dict[str, Any],
+    sungrow_history_data: dict[str, Any],
     sungrow_client,
     sungrow_token: str,
     sungrow_tenant_id: str,
 ) -> None:
+    
     structure = sungrow_reference_data["consumption_structure"]
     leaf_nodes = collect_leaf_nodes(structure)
     assert leaf_nodes, "Consumption structure has no leaf nodes"
@@ -302,8 +302,10 @@ def test_energy_consumption_map(
             "Expected SCADA batch response data to be a list, got "
             f"{type(result_data).__name__}"
         )
-
+    
     values_by_point: dict[str, str] = {}
+    history_data = sungrow_history_data['data']
+    values_history_by_point: dict[str, str] = {}
     for item in result_data:
         if not isinstance(item, dict):
             pytest.fail(f"Unexpected SCADA batch item: {item!r}")
@@ -312,6 +314,7 @@ def test_energy_consumption_map(
             pytest.fail(f"SCADA batch item has no string 'p' key: {item!r}")
         value = item.get("v")
         values_by_point[point_key] = "" if value is None else str(value)
+        values_history_by_point[point_key] = history_data.get(point_key, [])
 
     report = _render_report(
         structure=structure,
@@ -332,6 +335,7 @@ def test_energy_consumption_map(
     report_path.write_text(report, encoding="utf-8")
     logger.debug("HTML report: %s", report_path)
 
+@pytest.mark.skip(reason="This test is for debugging and printing API responses, not for automated testing.")
 @pytest.mark.sungrow
 def test_prints_room_power_statistics(
     sungrow_client,
@@ -348,7 +352,7 @@ def test_prints_room_power_statistics(
             headers=headers,
         )
         print(f"metaCode={payload['metaCode']}: {response.text}")
-        
+@pytest.mark.skip(reason="This test is for debugging and printing API responses, not for automated testing.")
 @pytest.mark.sungrow
 def test_prints_cabinet_power_statistics(
     sungrow_client,

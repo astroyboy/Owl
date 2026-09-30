@@ -298,38 +298,41 @@ def get_history_data(
     device_code: str,
     start: str,
     end: str,
-    point_code: str = "Eptp_1D",
-    interval: str = "1h-last",
+    interval: str = "1d-last",
     token: str | None = None,
+    history_data: dict[str, Any] | None = None,
 ) -> Any:
     """Fetch SCADA history for one device. ``start``/``end``: ``YYYY-MM-DD HH:MM:SS``."""
     selected_token = token or client.headers.get("X-AUTH-TOKEN", "")
-    response = client.post(
-        "https://ems.sungrow.cn/scada-service/private/history/query/sensitive",
-        json={
-            "deviceCode": device_code,
-            "pointCode": point_code,
-            "start": start,
-            "end": end,
-            "interval": interval,
-        },
-        headers={
-            "Referer": "https://ems.sungrow.cn/scada",
-            "X-ACCESS-TENANT": tenant_id,
-            "X-ACCESS-TOKEN": selected_token,
-            "X-AUTH-TENANT": tenant_id,
-            "X-AUTH-TOKEN": selected_token,
-            "X-AUTH-UUID": os.getenv("SUNGROW_AUTH_UUID", ""),
-        },
-    )
-    response.raise_for_status()
-    body = response.json()
-    if body.get("code") != 200:
-        raise RuntimeError(
-            f"History API returned an error for {device_code!r}: "
-            f"{json.dumps(body, ensure_ascii=False)}"
+    for point_code in ["Eptp_1D", "P_RT"]:
+        response = client.post(
+            "https://ems.sungrow.cn/scada-service/private/history/query/sensitive",
+            json={
+                "deviceCode": device_code,
+                "pointCode": point_code,
+                "start": start,
+                "end": end,
+                "interval": interval,
+            },
+            headers={
+                "Referer": "https://ems.sungrow.cn/scada",
+                "X-ACCESS-TENANT": tenant_id,
+                "X-ACCESS-TOKEN": selected_token,
+                "X-AUTH-TENANT": tenant_id,
+                "X-AUTH-TOKEN": selected_token,
+                "X-AUTH-UUID": os.getenv("SUNGROW_AUTH_UUID", ""),
+            },
         )
-    return body.get("data")
+        response.raise_for_status()
+        body = response.json()
+        if body.get("code") != 200:
+            raise RuntimeError(
+                f"History API returned an error for {device_code!r}: "
+                f"{json.dumps(body, ensure_ascii=False)}"
+            )
+        data = body.get("data")
+        history_data[f"{data['deviceCode']}::{data['pointCode']}"] = list(data['dps'].values())
+    return history_data
 
 
 def main() -> dict[str, Any]:

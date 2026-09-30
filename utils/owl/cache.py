@@ -166,8 +166,6 @@ def get_cached_history_data(
         selected_cache_dir,
         tenant_id,
         category,
-        selected_point_code,
-        selected_interval,
         suffix="_history"
     )
     params = {
@@ -186,7 +184,7 @@ def get_cached_history_data(
         except json.JSONDecodeError:
             print(f"Cache file is invalid JSON and will be refreshed: {latest_path}")
         else:
-            if _is_fresh(previous_record, params=params, now=now, age_limit=HISTORY_CACHE_MAX_AGE):
+            if _is_fresh(previous_record, tenant_id=tenant_id, category=category, now=now, age_limit=HISTORY_CACHE_MAX_AGE):
                 print(f"Using cached history data: {latest_path}")
                 return previous_record["data"]
             print(f"Cached history data is older than 1 day or invalid: {latest_path}")
@@ -208,26 +206,23 @@ def get_cached_history_data(
     start_text = start.strftime("%Y-%m-%d %H:%M:%S")
     end_text = end.strftime("%Y-%m-%d %H:%M:%S")
 
-    devices: dict[str, dict[str, Any]] = {}
+    history_data: dict[str] = {}
     for meta_code, meta_name in leaf_nodes:
-        devices[meta_code] = {
-            "metaName": meta_name,
-            "data": get_history_data(
+        get_history_data(
                 client,
                 tenant_id=tenant_id,
                 device_code=meta_code,
                 start=start_text,
                 end=end_text,
-                point_code=selected_point_code,
                 interval=selected_interval,
-            ),
-        }
+                history_data = history_data,
+            )
 
     record = {
         "schema_version": HISTORY_CACHE_SCHEMA_VERSION,
         **params,
         "fetched_at": now.isoformat(),
-        "data": {"start": start_text, "end": end_text, "devices": devices},
+        "data": {"start": start_text, "end": end_text, "data": history_data},
     }
 
     if latest_path.exists():
