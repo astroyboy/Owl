@@ -134,9 +134,17 @@ def _render_value_table(
         )
     return (
         "<div class=\"table-wrap\"><table>"
-        "<thead><tr><th>metaName</th>"
-        "<th>Eptp_1D (current)</th><th>Eptp_1D (history)</th>"
-        "<th>P_RT (current)</th><th>P_RT (history)</th></tr></thead>"
+        "<thead>"
+        "<tr>"
+        "<th rowspan=\"2\">metaName</th>"
+        "<th colspan=\"2\" style=\"text-align:center\">Eptp_1D</th>"
+        "<th colspan=\"2\" style=\"text-align:center\">P_RT</th>"
+        "</tr>"
+        "<tr>"
+        "<th>current</th><th>history</th>"
+        "<th>current</th><th>history</th>"
+        "</tr>"
+        "</thead>"
         f"<tbody>{''.join(rows)}</tbody>"
         "</table></div>"
     )
