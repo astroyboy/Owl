@@ -50,7 +50,6 @@ from owl.auth import Settings, SungrowAuthenticator
 def get_all_tenants(
     client: httpx.Client,
     *,
-    tenant_id: str,
     page_size: int = 100,
 ) -> list[dict[str, Any]]:
     """Fetch, print, and return all tenants visible to the authenticated user."""
@@ -61,7 +60,6 @@ def get_all_tenants(
         response = client.post(
             "/security/tenant/page/list",
             json={"pageNum": page_num, "pageSize": page_size},
-            headers={"X-AUTH-TENANT": tenant_id},
         )
         print("--- tenants ---")
         print(f"Request URL: {response.request.url}")
@@ -107,13 +105,10 @@ HTTP status: 200
 '''
 def get_structure_categories(
     client: httpx.Client,
-    *,
-    tenant_id: str,
 ) -> list[dict[str, Any]]:
     """Fetch, print as a table, and return energy structure categories."""
     response = client.get(
         "/monitor/topology/foundery/consumption/category",
-        headers={"X-AUTH-TENANT": tenant_id},
     )
     print("--- structure categories ---")
     print(f"Request URL: {response.request.url}")
@@ -186,14 +181,11 @@ def _project_structure_nodes(
 def get_consumption_structure(
     client: httpx.Client,
     category: str,
-    *,
-    tenant_id: str,
 ) -> dict[str, dict[str, Any]]:
     """Fetch, print, and return the projected consumption topology tree."""
     response = client.get(
         "/monitor/topology/foundery/consumption/structure",
         params={"category": category},
-        headers={"X-AUTH-TENANT": tenant_id},
     )
     print("--- consumption structure ---")
     print(f"Request URL: {response.request.url}")
@@ -294,7 +286,6 @@ def collect_leaf_nodes(
 def get_history_data(
     client: httpx.Client,
     *,
-    tenant_id: str,
     device_code: str,
     start: str,
     end: str,
@@ -316,9 +307,7 @@ def get_history_data(
             },
             headers={
                 "Referer": "https://ems.sungrow.cn/scada",
-                "X-ACCESS-TENANT": tenant_id,
                 "X-ACCESS-TOKEN": selected_token,
-                "X-AUTH-TENANT": tenant_id,
                 "X-AUTH-TOKEN": selected_token,
                 "X-AUTH-UUID": os.getenv("SUNGROW_AUTH_UUID", ""),
             },
@@ -339,7 +328,6 @@ def main() -> dict[str, Any]:
     """Authenticate and run all read-only API helpers for manual debugging."""
     settings = Settings.from_env()
     token = SungrowAuthenticator(settings).login()
-    tenant_id = os.getenv("SUNGROW_TENANT_ID", "900002")
     category = os.getenv(
         "SUNGROW_METRIC_CATEGORY",
         "49607e0284dd44b7b2807e0d103fbc55",
@@ -365,7 +353,6 @@ def main() -> dict[str, Any]:
 
         reference_data = get_cached_reference_data(
             client,
-            tenant_id=tenant_id,
             category=category,
         )
         tenants = reference_data["tenants"]

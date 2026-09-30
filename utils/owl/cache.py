@@ -9,6 +9,8 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
+from collections.abc import Callable
+from typing import Any
 
 from owl.api import (
     collect_leaf_nodes,
@@ -25,41 +27,67 @@ HISTORY_WINDOW_DAYS = 5
 UTC = timezone.utc
 
 
-def _cache_path(cache_dir: Path, tenant_id: str, category: str, suffix: str = "") -> Path:
-    key = f"tenant_{quote(tenant_id, safe='')}_category_{quote(category, safe='')}"
+def _cache_path(cache_dir: Path, suffix: str = "") -> Path:
+    key = "cached_consumption"
     return cache_dir / f"{key}{suffix}.json"
+
+def _verify_reference_data(record: Any) -> bool:
+    if not isinstance(record, dict):
+        return False
+
+    data = record.get("data")
+    if not isinstance(data, dict):
+        return False
+
+    required_keys = {
+        "tenants",
+        "categories",
+        "consumption_structure",
+    }
+
+    return required_keys.issubset(data)
+
+
+def _verify_history_data(record: Any) -> bool:
+    if not isinstance(record, dict):
+        print(f"Record is not a dictionary: {type(record)}")
+        return False
+
+    data = record.get("data")
+    if not isinstance(data, dict):
+        print(f"Data is not a dictionary: {type(data)}")
+        return False
+
+    return data.get("days") == HISTORY_WINDOW_DAYS
 
 def _is_fresh(
     record: Any,
     *,
-    tenant_id: str,
-    category: str,
     now: datetime,
-    age_limit: timedelta = CACHE_MAX_AGE,
+    age_limit: timedelta,
+    verifier: Callable[[Any], bool],
 ) -> bool:
     if not isinstance(record, dict):
-        return False
-    if (
-        record.get("schema_version") != CACHE_SCHEMA_VERSION
-        or record.get("tenant_id") != tenant_id
-        or record.get("category") != category
-    ):
         return False
 
     fetched_at = record.get("fetched_at")
     if not isinstance(fetched_at, str):
         return False
+
     try:
-        timestamp = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
+        timestamp = datetime.fromisoformat(
+            fetched_at.replace("Z", "+00:00")
+        )
     except ValueError:
         return False
+
     if timestamp.tzinfo is None:
         return False
 
-    data = record.get("data")
-    return (
-        now - timestamp.astimezone(UTC) < age_limit
-    )
+    if now - timestamp.astimezone(UTC) >= age_limit:
+        return False
+
+    return verifier(record)
 
 def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
     temporary_path = path.with_name(f".{path.name}.tmp")
@@ -73,7 +101,6 @@ def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
 def get_cached_reference_data(
     client: httpx.Client,
     *,
-    tenant_id: str,
     category: str,
     cache_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -82,7 +109,7 @@ def get_cached_reference_data(
         os.getenv("OWL_CACHE_DIR", ".cache")
     )
     selected_cache_dir.mkdir(parents=True, exist_ok=True)
-    latest_path = _cache_path(selected_cache_dir, tenant_id, category)
+    latest_path = _cache_path(selected_cache_dir)
     now = datetime.now(UTC)
 
     if latest_path.exists():
@@ -94,25 +121,22 @@ def get_cached_reference_data(
         else:
             if _is_fresh(
                 previous_record,
-                tenant_id=tenant_id,
-                category=category,
+                age_limit=CACHE_MAX_AGE,
+                verifier=_verify_reference_data,
                 now=now,
             ):
                 print(f"Using cached reference data: {latest_path}")
                 return previous_record["data"]
             print(f"Cached reference data is older than 3 days or invalid: {latest_path}")
 
-    tenants = get_all_tenants(client, tenant_id=tenant_id)
-    categories = get_structure_categories(client, tenant_id=tenant_id)
+    tenants = get_all_tenants(client)
+    categories = get_structure_categories(client)
     structure = get_consumption_structure(
         client,
         category,
-        tenant_id=tenant_id,
-    )
+        )
     record = {
         "schema_version": CACHE_SCHEMA_VERSION,
-        "tenant_id": tenant_id,
-        "category": category,
         "fetched_at": now.isoformat(),
         "data": {
             "tenants": tenants,
@@ -136,7 +160,6 @@ def get_cached_reference_data(
 def get_cached_history_data(
     client: httpx.Client,
     *,
-    tenant_id: str,
     category: str,
     point_code: str | None = None,
     interval: str | None = None,
@@ -159,8 +182,6 @@ def get_cached_history_data(
     selected_cache_dir.mkdir(parents=True, exist_ok=True)
     latest_path = _cache_path(
         selected_cache_dir,
-        tenant_id,
-        category,
         suffix="_history"
     )
     now = datetime.now(UTC)
@@ -172,7 +193,7 @@ def get_cached_history_data(
         except json.JSONDecodeError:
             print(f"Cache file is invalid JSON and will be refreshed: {latest_path}")
         else:
-            if _is_fresh(previous_record, tenant_id=tenant_id, category=category, now=now, age_limit=HISTORY_CACHE_MAX_AGE):
+            if _is_fresh(previous_record, now=now, age_limit=HISTORY_CACHE_MAX_AGE, verifier=_verify_history_data):
                 print(f"Using cached history data: {latest_path}")
                 return previous_record["data"]
             print(f"Cached history data is older than 1 day or invalid: {latest_path}")
@@ -180,7 +201,6 @@ def get_cached_history_data(
     if structure is None:
         structure = get_cached_reference_data(
             client,
-            tenant_id=tenant_id,
             category=category,
             cache_dir=selected_cache_dir,
         )["consumption_structure"]
@@ -198,7 +218,6 @@ def get_cached_history_data(
     for meta_code, meta_name in leaf_nodes:
         get_history_data(
                 client,
-                tenant_id=tenant_id,
                 device_code=meta_code,
                 start=start_text,
                 end=end_text,
@@ -209,7 +228,7 @@ def get_cached_history_data(
     record = {
         "schema_version": CACHE_SCHEMA_VERSION,
         "fetched_at": now.isoformat(),
-        "data": {"start": start_text, "end": end_text, "data": history_data},
+        "data": {"start": start_text, "end": end_text, "days": days,"data": history_data},
     }
 
     if latest_path.exists():

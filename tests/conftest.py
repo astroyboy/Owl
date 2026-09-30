@@ -162,26 +162,21 @@ def sungrow_client(
 @pytest.fixture(scope="session")
 def sungrow_reference_data(
     sungrow_client: httpx.Client,
-    sungrow_tenant_id: str,
     sungrow_metric_category: str,
 ) -> dict[str, Any]:
     """Load tenant/category/structure data from the 3-day local JSON cache."""
     return get_cached_reference_data(
         sungrow_client,
-        tenant_id=sungrow_tenant_id,
         category=sungrow_metric_category,
-    )
+        )
 
 
 @pytest.fixture(scope="session")
 def sungrow_history_data(
     sungrow_client: httpx.Client,
-    sungrow_tenant_id: str,
-    sungrow_metric_category: str,
-) -> dict[str, Any]:
+    ) -> dict[str, Any]:
     """Load history data from the 1-day local JSON cache."""
     return get_cached_history_data(
         sungrow_client,
-        tenant_id=sungrow_tenant_id,
         category=sungrow_metric_category,
-    )
+        )
