@@ -1,0 +1,133 @@
+diff --git a/tests/test_energy_consumption_map.py b/tests/test_energy_consumption_map.py
+index 6b8cf81..b8e4d38 100644
+--- a/tests/test_energy_consumption_map.py
++++ b/tests/test_energy_consumption_map.py
+@@ -102,16 +102,23 @@ def _power_statistics_payload(
+ def _render_value_table(
+     leaves: list[tuple[str, str]],
+     values_by_point: dict[str, str],
++    values_history_by_point: dict[str, list[Any]],
+ ) -> str:
+     def render_value(value: str, *, highlight: bool) -> str:
+         escaped_value = html.escape(value)
+         css_class = ' class="low-value"' if highlight else ""
+         return f"<td{css_class}>{escaped_value}</td>"
+ 
++    def render_history(history: list[Any]) -> str:
++        history_text = ", ".join(str(item) for item in history) or "--"
++        return render_value(history_text, highlight=history_text == "--")
++
+     rows = []
+     for meta_code, meta_name in leaves:
+         energy_value = values_by_point.get(f"{meta_code}::Eptp_1D") or "--"
+         power_value = values_by_point.get(f"{meta_code}::P_RT") or "--"
++        energy_history = values_history_by_point.get(f"{meta_code}::Eptp_1D") or []
++        power_history = values_history_by_point.get(f"{meta_code}::P_RT") or []
+         try:
+             low_energy_value = float(energy_value) < 10
+         except ValueError:
+@@ -120,12 +127,16 @@ def _render_value_table(
+             "<tr>"
+             f"<td>{html.escape(meta_name)}</td>"
+             f"{render_value(energy_value, highlight=energy_value == '--' or low_energy_value)}"
++            f"{render_history(energy_history)}"
+             f"{render_value(power_value, highlight=power_value == '--')}"
++            f"{render_history(power_history)}"
+             "</tr>"
+         )
+     return (
+         "<div class=\"table-wrap\"><table>"
+-        "<thead><tr><th>metaName</th><th>Eptp_1D</th><th>P_RT</th></tr></thead>"
++        "<thead><tr><th>metaName</th>"
++        "<th>Eptp_1D (current)</th><th>Eptp_1D (history)</th>"
++        "<th>P_RT (current)</th><th>P_RT (history)</th></tr></thead>"
+         f"<tbody>{''.join(rows)}</tbody>"
+         "</table></div>"
+     )
+@@ -136,6 +147,7 @@ def _render_tree_node(
+     node: dict[str, Any],
+     depth: int,
+     values_by_point: dict[str, str],
++    values_history_by_point: dict[str, list[Any]],
+ ) -> str:
+     meta_name = node.get("metaName")
+     if not isinstance(meta_name, str) or not meta_name:
+@@ -145,7 +157,9 @@ def _render_tree_node(
+     if not isinstance(children, list):
+         raise ValueError(f"Structure node {meta_code!r} has invalid children")
+     if not children:
+-        return _render_value_table([(meta_code, meta_name)], values_by_point)
++        return _render_value_table(
++            [(meta_code, meta_name)], values_by_point, values_history_by_point
++        )
+ 
+     leaf_children: list[tuple[str, str]] = []
+     branch_children: list[str] = []
+@@ -167,6 +181,7 @@ def _render_tree_node(
+                         child_node,
+                         depth + 1,
+                         values_by_point,
++                        values_history_by_point,
+                     )
+                 )
+             else:
+@@ -179,7 +194,9 @@ def _render_tree_node(
+     title = html.escape(meta_name)
+     default_open = ' open' if depth == 1 and meta_name == "阳光电源能耗地图" else ""
+     leaf_table = (
+-        _render_value_table(leaf_children, values_by_point) if leaf_children else ""
++        _render_value_table(leaf_children, values_by_point, values_history_by_point)
++        if leaf_children
++        else ""
+     )
+     return (
+         f"<details class=\"tree-node depth-{depth}\"{default_open}>"
+@@ -191,6 +208,7 @@ def _render_tree_node(
+ def _render_report(
+     structure: dict[str, dict[str, Any]],
+     values_by_point: dict[str, str],
++    values_history_by_point: dict[str, list[Any]],
+     request_url: str,
+     point_keys: list[str],
+     http_status: int,
+@@ -203,14 +221,21 @@ def _render_report(
+         if not isinstance(children, list):
+             raise ValueError(f"Structure node {meta_code!r} has invalid children")
+         if children:
+-            tree.append(_render_tree_node(meta_code, node, 1, values_by_point))
++            tree.append(
++                _render_tree_node(
++                    meta_code, node, 1, values_by_point, values_history_by_point
++                )
++            )
+         else:
+             meta_name = node.get("metaName")
+             if not isinstance(meta_name, str) or not meta_name:
+                 raise ValueError(f"Structure node {meta_code!r} has no metaName")
+             root_leaves.append((meta_code, meta_name))
+     if root_leaves:
+-        tree.insert(0, _render_value_table(root_leaves, values_by_point))
++        tree.insert(
++            0,
++            _render_value_table(root_leaves, values_by_point, values_history_by_point),
++        )
+ 
+     return f"""<!doctype html>
+ <html lang="zh-CN">
+@@ -305,7 +330,7 @@ def test_energy_consumption_map(
+     
+     values_by_point: dict[str, str] = {}
+     history_data = sungrow_history_data['data']
+-    values_history_by_point: dict[str, str] = {}
++    values_history_by_point: dict[str, list[Any]] = {}
+     for item in result_data:
+         if not isinstance(item, dict):
+             pytest.fail(f"Unexpected SCADA batch item: {item!r}")
+@@ -319,6 +344,7 @@ def test_energy_consumption_map(
+     report = _render_report(
+         structure=structure,
+         values_by_point=values_by_point,
++        values_history_by_point=values_history_by_point,
+         request_url=str(response.request.url),
+         point_keys=point_keys,
+         http_status=response.status_code,

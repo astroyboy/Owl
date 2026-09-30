@@ -60,10 +60,6 @@ def _is_fresh(
     data = record.get("data")
     return (
         now - timestamp.astimezone(UTC) < age_limit
-        and isinstance(data, dict)
-        and isinstance(data.get("tenants"), list)
-        and isinstance(data.get("categories"), list)
-        and isinstance(data.get("consumption_structure"), dict)
     )
 
 def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
@@ -168,13 +164,6 @@ def get_cached_history_data(
         category,
         suffix="_history"
     )
-    params = {
-        "tenant_id": tenant_id,
-        "category": category,
-        "point_code": selected_point_code,
-        "interval": selected_interval,
-        "days": days,
-    }
     now = datetime.now(UTC)
 
     if latest_path.exists():
@@ -219,8 +208,7 @@ def get_cached_history_data(
             )
 
     record = {
-        "schema_version": HISTORY_CACHE_SCHEMA_VERSION,
-        **params,
+        "schema_version": CACHE_SCHEMA_VERSION,
         "fetched_at": now.isoformat(),
         "data": {"start": start_text, "end": end_text, "data": history_data},
     }
