@@ -361,50 +361,6 @@ def test_energy_consumption_map(
     report_path.write_text(report, encoding="utf-8")
     logger.debug("HTML report: %s", report_path)
 
-
-@pytest.mark.sungrow
-def test_energy_consumption_map_history(
-    sungrow_client,
-    sungrow_reference_data: dict[str, Any],
-    sungrow_token: str,
-    sungrow_tenant_id: str,
-) -> None:
-    structure = sungrow_reference_data["consumption_structure"]
-    leaf_nodes = _collect_leaf_nodes(structure)
-    assert leaf_nodes, "Consumption structure has no leaf nodes"
-
-    end = datetime.now()
-    start = end - timedelta(days=5)
-    tenant_id = sungrow_tenant_id
-    for meta_code, meta_name in leaf_nodes:
-        payload = {
-            "deviceCode": meta_code,
-            "pointCode": os.getenv("SUNGROW_POINT_CODE", "Eptp_1D"),
-            "start": start.strftime("%Y-%m-%d %H:%M:%S"),
-            "end": end.strftime("%Y-%m-%d %H:%M:%S"),
-            "interval": os.getenv("SUNGROW_HISTORY_INTERVAL", "1h-last"),
-        }
-        response = sungrow_client.post(
-            "https://ems.sungrow.cn/scada-service/private/history/query/sensitive",
-            json=payload,
-            headers={
-                "Referer": "https://ems.sungrow.cn/scada",
-                "X-ACCESS-TENANT": tenant_id,
-                "X-ACCESS-TOKEN": sungrow_token,
-                "X-AUTH-TENANT": tenant_id,
-                "X-AUTH-TOKEN": sungrow_token,
-                "X-AUTH-UUID": os.getenv("SUNGROW_AUTH_UUID", ""),
-            },
-        )
-        response.raise_for_status()
-        body = response.json()
-        assert body.get("code") == 200, json.dumps(body, ensure_ascii=False)
-        print(
-            f"metaCode={meta_code} metaName={meta_name}: "
-            f"{json.dumps(body.get('data'), ensure_ascii=False)}"
-        )
-
-
 @pytest.mark.sungrow
 def test_prints_room_power_statistics(
     sungrow_client,

@@ -259,6 +259,79 @@ def get_structure_by_meta_name(
     return matches
 
 
+def collect_leaf_nodes(
+    nodes: dict[str, dict[str, Any]],
+) -> list[tuple[str, str]]:
+    """Return (metaCode, metaName) for every leaf of a projected structure."""
+    leaves: list[tuple[str, str]] = []
+
+    def visit(meta_code: str, node: dict[str, Any]) -> None:
+        meta_name = node.get("metaName")
+        if not isinstance(meta_name, str) or not meta_name:
+            raise ValueError(f"Structure node {meta_code!r} has no metaName")
+
+        children = node.get("children", [])
+        if not isinstance(children, list):
+            raise ValueError(f"Structure node {meta_code!r} has invalid children")
+        if not children:
+            leaves.append((meta_code, meta_name))
+            return
+
+        for child in children:
+            if not isinstance(child, dict):
+                raise ValueError(f"Structure node {meta_code!r} has an invalid child")
+            for child_code, child_node in child.items():
+                if not isinstance(child_node, dict):
+                    raise ValueError(
+                        f"Structure node {meta_code!r} has an invalid child node"
+                    )
+                visit(child_code, child_node)
+
+    for meta_code, node in nodes.items():
+        visit(meta_code, node)
+    return leaves
+
+def get_history_data(
+    client: httpx.Client,
+    *,
+    tenant_id: str,
+    device_code: str,
+    start: str,
+    end: str,
+    point_code: str = "Eptp_1D",
+    interval: str = "1h-last",
+    token: str | None = None,
+) -> Any:
+    """Fetch SCADA history for one device. ``start``/``end``: ``YYYY-MM-DD HH:MM:SS``."""
+    selected_token = token or client.headers.get("X-AUTH-TOKEN", "")
+    response = client.post(
+        "https://ems.sungrow.cn/scada-service/private/history/query/sensitive",
+        json={
+            "deviceCode": device_code,
+            "pointCode": point_code,
+            "start": start,
+            "end": end,
+            "interval": interval,
+        },
+        headers={
+            "Referer": "https://ems.sungrow.cn/scada",
+            "X-ACCESS-TENANT": tenant_id,
+            "X-ACCESS-TOKEN": selected_token,
+            "X-AUTH-TENANT": tenant_id,
+            "X-AUTH-TOKEN": selected_token,
+            "X-AUTH-UUID": os.getenv("SUNGROW_AUTH_UUID", ""),
+        },
+    )
+    response.raise_for_status()
+    body = response.json()
+    if body.get("code") != 200:
+        raise RuntimeError(
+            f"History API returned an error for {device_code!r}: "
+            f"{json.dumps(body, ensure_ascii=False)}"
+        )
+    return body.get("data")
+
+
 def main() -> dict[str, Any]:
     """Authenticate and run all read-only API helpers for manual debugging."""
     settings = Settings.from_env()
