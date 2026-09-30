@@ -7,9 +7,13 @@ import os
 import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
+import sys
 from typing import Any
 
 import pytest
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"utils"))
+
+from owl.api import collect_leaf_nodes
 
 logger = logging.getLogger(__name__)
 
@@ -96,39 +100,6 @@ def _power_statistics_payload(
     if not payloads:
         raise ValueError("No level-3 nodes ending in '能耗地图' found in structure")
     return payloads
-
-
-def _collect_leaf_nodes(
-    nodes: dict[str, dict[str, Any]],
-) -> list[tuple[str, str]]:
-    leaves: list[tuple[str, str]] = []
-
-    def visit(meta_code: str, node: dict[str, Any]) -> None:
-        meta_name = node.get("metaName")
-        if not isinstance(meta_name, str) or not meta_name:
-            raise ValueError(f"Structure node {meta_code!r} has no metaName")
-
-        children = node.get("children", [])
-        if not isinstance(children, list):
-            raise ValueError(f"Structure node {meta_code!r} has invalid children")
-        if not children:
-            leaves.append((meta_code, meta_name))
-            return
-
-        for child in children:
-            if not isinstance(child, dict):
-                raise ValueError(f"Structure node {meta_code!r} has an invalid child")
-            for child_code, child_node in child.items():
-                if not isinstance(child_node, dict):
-                    raise ValueError(
-                        f"Structure node {meta_code!r} has an invalid child node"
-                    )
-                visit(child_code, child_node)
-
-    for meta_code, node in nodes.items():
-        visit(meta_code, node)
-    return leaves
-
 
 def _render_value_table(
     leaves: list[tuple[str, str]],
@@ -300,7 +271,7 @@ def test_energy_consumption_map(
     sungrow_tenant_id: str,
 ) -> None:
     structure = sungrow_reference_data["consumption_structure"]
-    leaf_nodes = _collect_leaf_nodes(structure)
+    leaf_nodes = collect_leaf_nodes(structure)
     assert leaf_nodes, "Consumption structure has no leaf nodes"
 
     point_codes = ("Eptp_1D", "P_RT")
