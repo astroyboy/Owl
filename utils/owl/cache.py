@@ -21,7 +21,6 @@ from owl.api import (
 CACHE_MAX_AGE = timedelta(days=3)
 CACHE_SCHEMA_VERSION = 1
 HISTORY_CACHE_MAX_AGE = timedelta(days=1)
-HISTORY_CACHE_SCHEMA_VERSION = 1
 HISTORY_WINDOW_DAYS = 5
 UTC = timezone.utc
 

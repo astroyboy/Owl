@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from datetime import date, datetime, timedelta
 from pathlib import Path
 import sys
@@ -417,7 +418,7 @@ def _render_csv(
         writer.writerow(titles + [""] * (depth - len(titles)) + values)
     return output.getvalue()
 
-
+@pytest.mark.skip(reason="This test is for debugging and printing API responses, not for automated testing.")
 @pytest.mark.sungrow
 def test_energy_consumption_map(
     request: pytest.FixtureRequest,
@@ -502,38 +503,153 @@ def test_energy_consumption_map(
     )
     logger.debug("CSV report: %s", csv_path)
 
-@pytest.mark.skip(reason="This test is for debugging and printing API responses, not for automated testing.")
+def _display_width(text: str) -> int:
+    """Terminal width of ``text``; CJK characters take two columns."""
+    return sum(
+        2 if unicodedata.east_asian_width(char) in ("W", "F") else 1 for char in text
+    )
+
+
+def _table_cell(value: Any) -> tuple[str, bool]:
+    """Return (text, is_number) for one table cell."""
+    if value is None:
+        return "", False
+    if isinstance(value, bool):
+        return ("true" if value else "false"), False
+    if isinstance(value, (int, float)):
+        return str(value), True
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":")), False
+    return str(value).replace("\r", " ").replace("\n", " "), False
+
+
+def _format_table(columns: list[str], rows: list[list[Any]]) -> str:
+    cells = [[_table_cell(value) for value in row] for row in rows]
+    widths = [
+        max(
+            [_display_width(column)]
+            + [_display_width(row[index][0]) for row in cells]
+        )
+        for index, column in enumerate(columns)
+    ]
+
+    def pad(text: str, width: int, *, right: bool = False) -> str:
+        padding = " " * (width - _display_width(text))
+        return padding + text if right else text + padding
+
+    separator = "+-" + "-+-".join("-" * width for width in widths) + "-+"
+    lines = [
+        separator,
+        "| " + " | ".join(pad(c, w) for c, w in zip(columns, widths)) + " |",
+        separator,
+    ]
+    for row in cells:
+        lines.append(
+            "| "
+            + " | ".join(
+                pad(text, width, right=is_number)
+                for (text, is_number), width in zip(row, widths)
+            )
+            + " |"
+        )
+    lines.append(separator)
+    return "\n".join(lines)
+
+
+POWER_STATISTICS_COLUMNS = ["metaCode", "code", "offline", "online", "alarm"]
+
+
+def _find_field(data: Any, name: str) -> Any:
+    """Value stored under ``name`` in an object, looking into nested objects.
+
+    A list is only searched when it holds exactly one item; with several items
+    there is no single right value to pick, so nothing is returned.
+    """
+    if isinstance(data, dict):
+        if name in data:
+            return data[name]
+        for value in data.values():
+            found = _find_field(value, name)
+            if found is not None:
+                return found
+    elif isinstance(data, list) and len(data) == 1:
+        return _find_field(data[0], name)
+    return None
+
+
+def _power_statistics_row(meta_code: str, response: Any) -> list[Any]:
+    """One table row: metaCode, response code, then offline/online/alarm."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return [meta_code, f"HTTP {response.status_code}", "--", "--", "--"]
+
+    data = body.get("data")
+    values = [_find_field(data, name) for name in POWER_STATISTICS_COLUMNS[2:]]
+    return [
+        meta_code,
+        body.get("code", f"HTTP {response.status_code}"),
+        *("--" if value is None else value for value in values),
+    ]
+
+
+def _emit_table(text: str) -> None:
+    """Show ``text`` on screen and in the per-test log.
+
+    ``print`` reaches the screen when pytest runs with ``-s`` (run_test.py does).
+    Log records are always captured into the test log, even with ``-s``.
+    The leading newline keeps the table aligned after the log prefix.
+    """
+    print(text)
+    logger.info("\n%s", text)
+
+
+def _print_power_statistics(
+    sungrow_client: Any,
+    structure: dict[str, dict[str, Any]],
+    tenants: list[dict[str, Any]],
+    path: str,
+) -> None:
+    rows: list[list[Any]] = []
+    for tenant_id, payload in _power_statistics_payload(structure, tenants):
+        headers = sungrow_client.headers.copy()
+        headers["X-AUTH-TENANT"] = tenant_id
+        response = sungrow_client.post(path, json=payload, headers=headers)
+        # The full response goes to the test log only, so nothing is lost.
+        logger.debug(
+            "metaCode=%s tenant=%s HTTP %s: %s",
+            payload["metaCode"],
+            tenant_id,
+            response.status_code,
+            response.text,
+        )
+        rows.append(_power_statistics_row(payload["metaCode"], response))
+    _emit_table(f"POST {path}\n" + _format_table(POWER_STATISTICS_COLUMNS, rows))
+
+
 @pytest.mark.sungrow
 def test_room_power_statistics(
     sungrow_client,
     sungrow_reference_data: dict[str, Any],
 ) -> None:
-    structure = sungrow_reference_data["consumption_structure"]
-    tenants = sungrow_reference_data["tenants"]
-    for tenant_id, payload in _power_statistics_payload(structure, tenants):
-        headers = sungrow_client.headers.copy()
-        headers["X-AUTH-TENANT"] = tenant_id
-        response = sungrow_client.post(
-            "/monitor/consumption/map/statistics/power/room",
-            json=payload,
-            headers=headers,
-        )
-        print(f"metaCode={payload['metaCode']}: {response.text}")
-@pytest.mark.skip(reason="This test is for debugging and printing API responses, not for automated testing.")
+    _print_power_statistics(
+        sungrow_client,
+        sungrow_reference_data["consumption_structure"],
+        sungrow_reference_data["tenants"],
+        "/monitor/consumption/map/statistics/power/room",
+    )
+
+
 @pytest.mark.sungrow
 def test_cabinet_power_statistics(
     sungrow_client,
     sungrow_reference_data: dict[str, Any],
 ) -> None:
-    structure = sungrow_reference_data["consumption_structure"]
-    tenants = sungrow_reference_data["tenants"]
-    for tenant_id, payload in _power_statistics_payload(structure, tenants):
-        headers = sungrow_client.headers.copy()
-        headers["X-AUTH-TENANT"] = tenant_id
-        response = sungrow_client.post(
-            "/monitor/consumption/map/statistics/power/cabinet",
-            json=payload,
-            headers=headers,
-        )
-        print(f"metaCode={payload['metaCode']}: {response.text}")
-
+    _print_power_statistics(
+        sungrow_client,
+        sungrow_reference_data["consumption_structure"],
+        sungrow_reference_data["tenants"],
+        "/monitor/consumption/map/statistics/power/cabinet",
+    )
