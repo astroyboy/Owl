@@ -504,7 +504,7 @@ def test_energy_consumption_map(
 
 @pytest.mark.skip(reason="This test is for debugging and printing API responses, not for automated testing.")
 @pytest.mark.sungrow
-def test_prints_room_power_statistics(
+def test_room_power_statistics(
     sungrow_client,
     sungrow_reference_data: dict[str, Any],
 ) -> None:
@@ -521,7 +521,7 @@ def test_prints_room_power_statistics(
         print(f"metaCode={payload['metaCode']}: {response.text}")
 @pytest.mark.skip(reason="This test is for debugging and printing API responses, not for automated testing.")
 @pytest.mark.sungrow
-def test_prints_cabinet_power_statistics(
+def test_cabinet_power_statistics(
     sungrow_client,
     sungrow_reference_data: dict[str, Any],
 ) -> None:
