@@ -15,6 +15,8 @@ from typing import Any
 
 import pytest
 from owl.api import collect_leaf_nodes
+from owl.reporting import ReportTable
+
 
 logger = logging.getLogger(__name__)
 
@@ -418,6 +420,249 @@ def _render_csv(
         writer.writerow(titles + [""] * (depth - len(titles)) + values)
     return output.getvalue()
 
+
+def _missing_value_report_table(
+    structure: dict[str, dict[str, Any]],
+    values_by_point: dict[str, str],
+    values_history_by_point: dict[str, list[Any]],
+) -> ReportTable:
+    all_rows: list[tuple[list[str], list[str]]] = []
+    for meta_code, node in structure.items():
+        all_rows.extend(
+            _csv_node_rows(
+                meta_code,
+                node,
+                [],
+                values_by_point,
+                values_history_by_point,
+            )
+        )
+
+    columns = (
+        ["Item"]
+        + [
+            "Eptp_1D (current)",
+            "Eptp_1D (history)",
+            "P_RT (current)",
+            "P_RT (history)",
+        ]
+    )
+    rows = []
+    for titles, values in all_rows:
+        meta_name = values[0]
+        energy_value = values[1]
+        power_value = values[3]
+        if energy_value == "--" or (
+            "总表" in meta_name and power_value == "--"
+        ):
+            rows.append(
+                [
+                    "/".join([*titles[1:], meta_name]),
+                    *values[1:],
+                ]
+            )
+
+    return ReportTable(
+        title="Missing data of energy consumption map",
+        columns=columns,
+        rows=rows,
+    )
+
+def _display_width(text: str) -> int:
+    """Terminal width of ``text``; CJK characters take two columns."""
+    return sum(
+        2 if unicodedata.east_asian_width(char) in ("W", "F") else 1 for char in text
+    )
+
+
+def _table_cell(value: Any) -> tuple[str, bool]:
+    """Return (text, is_number) for one table cell."""
+    if value is None:
+        return "", False
+    if isinstance(value, bool):
+        return ("true" if value else "false"), False
+    if isinstance(value, (int, float)):
+        return str(value), True
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":")), False
+    return str(value).replace("\r", " ").replace("\n", " "), False
+
+
+def _format_table(
+    columns: list[str],
+    rows: list[list[Any]],
+    *,
+    minimum_widths: dict[str, int] | None = None,
+) -> str:
+    cells = [[_table_cell(value) for value in row] for row in rows]
+    widths = [
+        max(
+            [_display_width(column)]
+            + [_display_width(row[index][0]) for row in cells]
+            + (
+                [minimum_widths[column]]
+                if minimum_widths and column in minimum_widths
+                else []
+            )
+        )
+        for index, column in enumerate(columns)
+    ]
+
+    def pad(text: str, width: int, *, right: bool = False) -> str:
+        padding = " " * (width - _display_width(text))
+        return padding + text if right else text + padding
+
+    separator = "+-" + "-+-".join("-" * width for width in widths) + "-+"
+    lines = [
+        separator,
+        "| " + " | ".join(pad(c, w) for c, w in zip(columns, widths)) + " |",
+        separator,
+    ]
+    for row in cells:
+        lines.append(
+            "| "
+            + " | ".join(
+                pad(text, width, right=is_number)
+                for (text, is_number), width in zip(row, widths)
+            )
+            + " |"
+        )
+    lines.append(separator)
+    return "\n".join(lines)
+
+
+POWER_STATISTICS_COLUMNS = ["metaCode", "code", "offline", "online", "alarm"]
+POWER_STATISTICS_MINIMUM_WIDTHS = {
+    "metaCode": 40,
+    "code": 8,
+    "offline": 12,
+    "online": 12,
+    "alarm": 12,
+}
+
+
+def _find_field(data: Any, name: str) -> Any:
+    """Value stored under ``name`` in an object, looking into nested objects.
+
+    A list is only searched when it holds exactly one item; with several items
+    there is no single right value to pick, so nothing is returned.
+    """
+    if isinstance(data, dict):
+        if name in data:
+            return data[name]
+        for value in data.values():
+            found = _find_field(value, name)
+            if found is not None:
+                return found
+    elif isinstance(data, list) and len(data) == 1:
+        return _find_field(data[0], name)
+    return None
+
+
+
+
+
+def _power_statistics_row(meta_code: str, response: Any) -> list[Any]:
+    """One table row: metaCode, response code, then offline/online/alarm."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return [meta_code, f"HTTP {response.status_code}", "--", "--", "--"]
+
+    data = body.get("data")
+    values = [_find_field(data, name) for name in POWER_STATISTICS_COLUMNS[2:]]
+    return [
+        meta_code,
+        body.get("code", f"HTTP {response.status_code}"),
+        *("--" if value is None else value for value in values),
+    ]
+
+
+def _emit_table(text: str) -> None:
+    """Show ``text`` on screen and in the per-test log.
+
+    ``print`` reaches the screen when pytest runs with ``-s`` (run_test.py does).
+    Log records are always captured into the test log, even with ``-s``.
+    The leading newline keeps the table aligned after the log prefix.
+    """
+    print(text)
+    logger.info("\n%s", text)
+
+
+def _print_power_statistics(
+    sungrow_client: Any,
+    structure: dict[str, dict[str, Any]],
+    tenants: list[dict[str, Any]],
+    path: str,
+    report_collector,
+    request: pytest.FixtureRequest
+) -> None:
+    rows: list[list[Any]] = []
+    for tenant_id, payload in _power_statistics_payload(structure, tenants):
+        headers = sungrow_client.headers.copy()
+        headers["X-AUTH-TENANT"] = tenant_id
+        response = sungrow_client.post(path, json=payload, headers=headers)
+        # The full response goes to the test log only, so nothing is lost.
+        logger.debug(
+            "metaCode=%s tenant=%s HTTP %s: %s",
+            payload["metaCode"],
+            tenant_id,
+            response.status_code,
+            response.text,
+        )
+        rows.append(_power_statistics_row(payload["metaCode"], response))
+    _emit_table(
+        f"POST {path}\n"
+        + _format_table(
+            POWER_STATISTICS_COLUMNS,
+            rows,
+            minimum_widths=POWER_STATISTICS_MINIMUM_WIDTHS,
+        ))
+    report_collector.add_table(
+        request.node.nodeid,
+        ReportTable(
+            title=f"{path.split('/')[-1]} status",
+            columns=["metaCode", "code", "offline", "online", "alarm"],
+            rows=rows,
+        ),
+    )
+    
+
+@pytest.mark.sungrow
+def test_room_power_statistics(
+    request: pytest.FixtureRequest,
+    sungrow_client,
+    sungrow_reference_data: dict[str, Any],
+    report_collector,
+) -> None:
+    _print_power_statistics(
+        sungrow_client,
+        sungrow_reference_data["consumption_structure"],
+        sungrow_reference_data["tenants"],
+        "/monitor/consumption/map/statistics/power/room",
+        report_collector,
+        request,
+    )
+
+
+@pytest.mark.sungrow
+def test_cabinet_power_statistics(
+    request: pytest.FixtureRequest,
+    sungrow_client,
+    sungrow_reference_data: dict[str, Any],
+    report_collector,
+) -> None:
+    _print_power_statistics(
+        sungrow_client,
+        sungrow_reference_data["consumption_structure"],
+        sungrow_reference_data["tenants"],
+        "/monitor/consumption/map/statistics/power/cabinet",
+        report_collector,
+        request,
+    )
+
 @pytest.mark.sungrow
 def test_energy_consumption_map(
     request: pytest.FixtureRequest,
@@ -425,7 +670,7 @@ def test_energy_consumption_map(
     sungrow_history_data: dict[str, Any],
     sungrow_client,
     sungrow_token: str,
-    sungrow_tenant_id: str,
+    report_collector,
 ) -> None:
     
     structure = sungrow_reference_data["consumption_structure"]
@@ -438,18 +683,12 @@ def test_energy_consumption_map(
         for meta_code, _ in leaf_nodes
         for point_code in point_codes
     ]
-    tenant_id = sungrow_tenant_id
     response = sungrow_client.post(
         "https://ems.sungrow.cn/scada-service/calculate/real/query/batch",
         json=point_keys,
         headers={
-            "Referer": "https://ems.sungrow.cn/scada",
-            "X-ACCESS-TENANT": tenant_id,
-            "X-ACCESS-TOKEN": sungrow_token,
-            "X-AUTH-TENANT": tenant_id,
             "X-AUTH-TOKEN": sungrow_token,
-            "X-AUTH-UUID": os.getenv("SUNGROW_AUTH_UUID", ""),
-        },
+            },
     )
     response.raise_for_status()
     body = response.json()
@@ -501,154 +740,11 @@ def test_energy_consumption_map(
         encoding="utf-8-sig",
     )
     logger.debug("CSV report: %s", csv_path)
-
-def _display_width(text: str) -> int:
-    """Terminal width of ``text``; CJK characters take two columns."""
-    return sum(
-        2 if unicodedata.east_asian_width(char) in ("W", "F") else 1 for char in text
-    )
-
-
-def _table_cell(value: Any) -> tuple[str, bool]:
-    """Return (text, is_number) for one table cell."""
-    if value is None:
-        return "", False
-    if isinstance(value, bool):
-        return ("true" if value else "false"), False
-    if isinstance(value, (int, float)):
-        return str(value), True
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":")), False
-    return str(value).replace("\r", " ").replace("\n", " "), False
-
-
-def _format_table(columns: list[str], rows: list[list[Any]]) -> str:
-    cells = [[_table_cell(value) for value in row] for row in rows]
-    widths = [
-        max(
-            [_display_width(column)]
-            + [_display_width(row[index][0]) for row in cells]
-        )
-        for index, column in enumerate(columns)
-    ]
-
-    def pad(text: str, width: int, *, right: bool = False) -> str:
-        padding = " " * (width - _display_width(text))
-        return padding + text if right else text + padding
-
-    separator = "+-" + "-+-".join("-" * width for width in widths) + "-+"
-    lines = [
-        separator,
-        "| " + " | ".join(pad(c, w) for c, w in zip(columns, widths)) + " |",
-        separator,
-    ]
-    for row in cells:
-        lines.append(
-            "| "
-            + " | ".join(
-                pad(text, width, right=is_number)
-                for (text, is_number), width in zip(row, widths)
-            )
-            + " |"
-        )
-    lines.append(separator)
-    return "\n".join(lines)
-
-
-POWER_STATISTICS_COLUMNS = ["metaCode", "code", "offline", "online", "alarm"]
-
-
-def _find_field(data: Any, name: str) -> Any:
-    """Value stored under ``name`` in an object, looking into nested objects.
-
-    A list is only searched when it holds exactly one item; with several items
-    there is no single right value to pick, so nothing is returned.
-    """
-    if isinstance(data, dict):
-        if name in data:
-            return data[name]
-        for value in data.values():
-            found = _find_field(value, name)
-            if found is not None:
-                return found
-    elif isinstance(data, list) and len(data) == 1:
-        return _find_field(data[0], name)
-    return None
-
-
-def _power_statistics_row(meta_code: str, response: Any) -> list[Any]:
-    """One table row: metaCode, response code, then offline/online/alarm."""
-    try:
-        body = response.json()
-    except ValueError:
-        body = None
-    if not isinstance(body, dict):
-        return [meta_code, f"HTTP {response.status_code}", "--", "--", "--"]
-
-    data = body.get("data")
-    values = [_find_field(data, name) for name in POWER_STATISTICS_COLUMNS[2:]]
-    return [
-        meta_code,
-        body.get("code", f"HTTP {response.status_code}"),
-        *("--" if value is None else value for value in values),
-    ]
-
-
-def _emit_table(text: str) -> None:
-    """Show ``text`` on screen and in the per-test log.
-
-    ``print`` reaches the screen when pytest runs with ``-s`` (run_test.py does).
-    Log records are always captured into the test log, even with ``-s``.
-    The leading newline keeps the table aligned after the log prefix.
-    """
-    print(text)
-    logger.info("\n%s", text)
-
-
-def _print_power_statistics(
-    sungrow_client: Any,
-    structure: dict[str, dict[str, Any]],
-    tenants: list[dict[str, Any]],
-    path: str,
-) -> None:
-    rows: list[list[Any]] = []
-    for tenant_id, payload in _power_statistics_payload(structure, tenants):
-        headers = sungrow_client.headers.copy()
-        headers["X-AUTH-TENANT"] = tenant_id
-        response = sungrow_client.post(path, json=payload, headers=headers)
-        # The full response goes to the test log only, so nothing is lost.
-        logger.debug(
-            "metaCode=%s tenant=%s HTTP %s: %s",
-            payload["metaCode"],
-            tenant_id,
-            response.status_code,
-            response.text,
-        )
-        rows.append(_power_statistics_row(payload["metaCode"], response))
-    _emit_table(f"POST {path}\n" + _format_table(POWER_STATISTICS_COLUMNS, rows))
-
-
-@pytest.mark.sungrow
-def test_room_power_statistics(
-    sungrow_client,
-    sungrow_reference_data: dict[str, Any],
-) -> None:
-    _print_power_statistics(
-        sungrow_client,
-        sungrow_reference_data["consumption_structure"],
-        sungrow_reference_data["tenants"],
-        "/monitor/consumption/map/statistics/power/room",
-    )
-
-
-@pytest.mark.sungrow
-def test_cabinet_power_statistics(
-    sungrow_client,
-    sungrow_reference_data: dict[str, Any],
-) -> None:
-    _print_power_statistics(
-        sungrow_client,
-        sungrow_reference_data["consumption_structure"],
-        sungrow_reference_data["tenants"],
-        "/monitor/consumption/map/statistics/power/cabinet",
+    report_collector.add_table(
+        request.node.nodeid,
+        _missing_value_report_table(
+            structure,
+            values_by_point,
+            values_history_by_point,
+        ),
     )

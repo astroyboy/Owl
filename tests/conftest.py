@@ -12,6 +12,7 @@ import pytest
 from owl.auth import Settings, SungrowAuthenticator
 from owl.cache import get_cached_reference_data
 from owl.cache import get_cached_history_data
+from utils.owl.reporting import ReportCollector
 
 def _test_log_path(item: pytest.Item) -> Path:
     logs_root = Path(item.config.rootpath) / "test_logs"
@@ -180,3 +181,51 @@ def sungrow_history_data(
         sungrow_client,
         category=sungrow_metric_category,
         )
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "hide_report_error: omit the pytest failure message from the HTML report",
+    )
+    config._owl_report_collector = ReportCollector()
+
+
+@pytest.fixture(scope="session")
+def report_collector(request):
+    return request.config._owl_report_collector
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+
+    if report.when != "call":
+        return
+
+    collector = item.session.config._owl_report_collector
+
+    test_report = collector.get_test(item.nodeid)
+
+    test_report.outcome = report.outcome
+    test_report.duration = report.duration
+
+    if report.failed:
+        if item.get_closest_marker("hide_report_error") is not None:
+            test_report.error = None
+        else:
+            test_report.error = str(report.longrepr)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    collector = session.config._owl_report_collector
+
+    output_file = (
+        session.config.rootpath
+        / "test_logs"
+        / "report.html"
+    )
+
+    collector.save_html(output_file)
+
+    print(f"\nOwl report: {output_file}")

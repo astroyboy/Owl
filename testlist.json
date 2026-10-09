@@ -1,0 +1,4 @@
+[
+  "tests/test_visual.py",
+  "tests/test_energy_consumption_map.py"
+]
