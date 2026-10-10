@@ -171,4 +171,4 @@ def test_electricity_power_trend(
                 rows=report_rows,
             ),
         )
-        #pytest.fail("Trend validation found empty values:\n" + "\n".join(failures))
+        pytest.fail("Trend validation found empty values:\n" + "\n".join(failures))
