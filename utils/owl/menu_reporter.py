@@ -3,7 +3,7 @@ import csv
 from pathlib import Path
 from typing import Any
 
-
+#used only to clean up roles definitions for test_security.py
 def flatten_menu_tree(
     menus: list[dict[str, Any]],
     parent_path: str = "",

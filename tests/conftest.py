@@ -14,6 +14,7 @@ from owl.auth import Settings, SungrowAuthenticator
 from owl.cache import get_cached_reference_data
 from owl.cache import get_cached_history_data
 from utils.owl.reporting import ReportCollector
+from utils.owl.send_email import send_report_email
 
 def _test_log_path(item: pytest.Item) -> Path:
     logs_root = Path(item.config.rootpath) / "test_logs"
@@ -220,3 +221,10 @@ def pytest_sessionfinish(session, exitstatus):
     collector.save_html(output_file)
 
     print(f"\nOwl report: {output_file}")
+    if os.environ.get("163_SMTP_AUTH_CODE"):
+        send_report_email(output_file)
+    else:
+        print(
+            "[Owl] Report email not sent: "
+            "163_SMTP_AUTH_CODE is not set."
+        )

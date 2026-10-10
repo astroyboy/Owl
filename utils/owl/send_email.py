@@ -34,18 +34,12 @@ def send_report_email(report_path: str | Path) -> None:
     message["Subject"] = "Owl Automated Test Report"
 
     message.set_content(
-        "Hello,\n\n"
-        "The Owl automated test run has finished.\n"
-        "Please find the HTML test report attached.\n\n"
-        "Best regards,\n"
-        "Owl Test Framework"
+        "The Owl automated test run has finished. "
+        "The report is included as the HTML message body."
     )
-
-    message.add_attachment(
-        report_path.read_bytes(),
-        maintype="text",
+    message.add_alternative(
+        report_path.read_text(encoding="utf-8"),
         subtype="html",
-        filename=report_path.name,
     )
 
     with smtplib.SMTP_SSL(
