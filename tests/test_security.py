@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 import pytest
+from owl.menu_reporter import export_overall_menu_csv
+import re
 
 
 def _write_csv_report(
@@ -27,11 +29,11 @@ def _post_security_list(
     client: httpx.Client,
     *,
     endpoint: str,
-    tenant_id: str,
+    #tenant_id: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     headers = client.headers.copy()
-    headers["X-AUTH-TENANT"] = tenant_id
+    #headers["X-AUTH-TENANT"] = tenant_id
     response = client.post(endpoint, json=payload, headers=headers)
 
     print(f"\nRequest URL: {response.request.url}")
@@ -61,7 +63,7 @@ def test_user_list(sungrow_client: httpx.Client, sungrow_tenant_id: str) -> None
         body = _post_security_list(
             sungrow_client,
             endpoint=endpoint,
-            tenant_id=sungrow_tenant_id,
+            #tenant_id=sungrow_tenant_id,
             payload={
                 "pageNum": page_num,
                 "pageSize": 10,
@@ -149,76 +151,121 @@ def test_user_list(sungrow_client: httpx.Client, sungrow_tenant_id: str) -> None
 
 
 @pytest.mark.sungrow
-def test_role_list(sungrow_client: httpx.Client, sungrow_tenant_id: str) -> None:
+def test_role_list(
+    sungrow_client: httpx.Client,
+) -> None:
+    """Fetch all roles and export one overall menu permission report."""
+
     endpoint = "/security/role/page/list"
+    endpoint_detail = "/security/role/menu/tree"
+
     page_num = 1
-    role_rows: list[tuple[str, str]] = []
+    page_size = 10
+
+    # Store each role's menu tree, keyed by role name.
+    menus_by_role: dict[str, list[dict]] = {}
 
     while True:
+        # Fetch one page of roles.
         body = _post_security_list(
             sungrow_client,
             endpoint=endpoint,
-            tenant_id=sungrow_tenant_id,
             payload={
                 "pageNum": page_num,
-                "pageSize": 10,
+                "pageSize": page_size,
                 "roleName": "",
             },
         )
+
         data = body.get("data")
         if not isinstance(data, dict):
-            raise ValueError(f"Expected paginated data from {endpoint}")
+            raise ValueError(
+                f"Expected paginated data from {endpoint}, "
+                f"page {page_num}"
+            )
+
         page_roles = data.get("list")
         if not isinstance(page_roles, list):
-            raise ValueError(f"Expected a role list on page {page_num}")
+            raise ValueError(
+                f"Expected role list on page {page_num}"
+            )
+
+        # No more roles: finish pagination.
         if not page_roles:
             break
-        print (f"Page {page_num} roles: {json.dumps(page_roles, ensure_ascii=False)}")
+
+        print(
+            f"[Owl] Processing page {page_num}, "
+            f"roles: {len(page_roles)}"
+        )
+
         for role in page_roles:
             if not isinstance(role, dict):
-                raise ValueError(f"Invalid role on page {page_num}: {role!r}")
-            menu_details = role.get("menuDetailList", [])
-            if not isinstance(menu_details, list):
-                raise ValueError(f"Invalid menuDetailList on page {page_num}")
-            titles = []
-            for menu in menu_details:
-                if not isinstance(menu, dict):
-                    raise ValueError(f"Invalid menu detail on page {page_num}")
-                if "title" in menu:
-                    titles.append(str(menu["title"]))
-            role_rows.append(
-                (
-                    str(role.get("roleName", "")),
-                    ", ".join(titles),
+                raise ValueError(
+                    f"Invalid role on page {page_num}: {role!r}"
                 )
+
+            role_id = role.get("roleId", "")
+            role_name = str(role.get("roleName", "")).strip()
+
+            if not role_id:
+                raise ValueError(
+                    f"Missing roleId for role {role_name!r}"
+                )
+
+            if not role_name:
+                raise ValueError(
+                    f"Missing roleName for roleId {role_id!r}"
+                )
+
+            if role_name in menus_by_role:
+                raise ValueError(
+                    f"Duplicate roleName encountered: {role_name!r}"
+                )
+
+            # Fetch this role's menu tree.
+            role_details = _post_security_list(
+                sungrow_client,
+                endpoint=endpoint_detail,
+                payload={"roleId": role_id},
             )
+
+            menus = role_details.get("data")
+            if not isinstance(menus, list):
+                raise ValueError(
+                    f"Expected menu tree list for role "
+                    f"{role_name!r}, got {type(menus).__name__}"
+                )
+
+            # Keep the complete tree for the overall comparison.
+            menus_by_role[role_name] = menus
+
+            print(
+                f"[Owl] Retrieved menu tree for role: "
+                f"{role_name}"
+            )
+
         page_num += 1
 
-    headers = ("roleName", "FunctionList")
-    widths = (
-        max(len(headers[0]), *(len(row[0]) for row in role_rows)),
-        max(len(headers[1]), *(len(row[1]) for row in role_rows)),
-    )
-    separator = f"+-{'-' * widths[0]}-+-{'-' * widths[1]}-+"
-    print("\nRole list")
-    print(separator)
-    print(f"| {headers[0]:<{widths[0]}} | {headers[1]:<{widths[1]}} |")
-    print(separator)
-    for role_name, function_list in role_rows:
-        print(
-            f"| {role_name:<{widths[0]}} | "
-            f"{function_list:<{widths[1]}} |"
-        )
-    print(separator)
-    print(f"Total roles: {len(role_rows)}")
+    if not menus_by_role:
+        raise ValueError("No roles were retrieved; no report generated.")
+
+    # Generate one overall CSV after all roles have been collected.
     report_path = (
-        Path(__file__).resolve().parents[1]
-        / "test_logs"
-        / "test_security"
-        / "roles.csv"
+            Path(__file__).resolve().parents[1]
+            / "test_logs"
+            / "test_security"
+            / "test_role_list"
+        )
+    report_path.mkdir(parents=True, exist_ok=True)
+    output_file = report_path / "overall_menu_comparison.csv"
+
+    export_overall_menu_csv(
+        menus_by_role,
+        output_file=output_file,
     )
-    _write_csv_report(
-        report_path,
-        headers=headers,
-        rows=role_rows,
+
+    print(
+        f"[Owl] Completed. Retrieved {len(menus_by_role)} roles. "
+        f"Overall report: {output_file}"
     )

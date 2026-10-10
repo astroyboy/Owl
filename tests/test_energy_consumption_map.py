@@ -463,7 +463,7 @@ def _missing_value_report_table(
             )
 
     return ReportTable(
-        title="Missing data of energy consumption map",
+        title="能源地图缺少数据",
         columns=columns,
         rows=rows,
     )
@@ -623,7 +623,7 @@ def _print_power_statistics(
     report_collector.add_table(
         request.node.nodeid,
         ReportTable(
-            title=f"{path.split('/')[-1]} status",
+            title=f"{path.split('/')[-1]} 离线/在线/告警统计",
             columns=["metaCode", "code", "offline", "online", "alarm"],
             rows=rows,
         ),

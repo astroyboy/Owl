@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import os
 import re
 from collections.abc import Iterator
@@ -59,6 +60,18 @@ def pytest_runtest_makereport(
             log_file.write(f"{content}\n")
             logged_sections.add(section_key)
     setattr(item, "_owl_logged_sections", logged_sections)
+
+    if report.when == "call":
+        collector = item.session.config._owl_report_collector
+        test_report = collector.get_test(item.nodeid)
+        test_report.outcome = report.outcome
+        test_report.duration = report.duration
+
+        if report.failed:
+            if item.get_closest_marker("hide_report_error") is not None:
+                test_report.error = None
+            else:
+                test_report.error = str(report.longrepr)
 
 
 def _run_live_tests(config: pytest.Config) -> bool:
@@ -195,35 +208,13 @@ def report_collector(request):
     return request.config._owl_report_collector
 
 
-@pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_makereport(item, call):
-    outcome = yield
-    report = outcome.get_result()
-
-    if report.when != "call":
-        return
-
-    collector = item.session.config._owl_report_collector
-
-    test_report = collector.get_test(item.nodeid)
-
-    test_report.outcome = report.outcome
-    test_report.duration = report.duration
-
-    if report.failed:
-        if item.get_closest_marker("hide_report_error") is not None:
-            test_report.error = None
-        else:
-            test_report.error = str(report.longrepr)
-
-
 def pytest_sessionfinish(session, exitstatus):
     collector = session.config._owl_report_collector
 
     output_file = (
         session.config.rootpath
         / "test_logs"
-        / "report.html"
+        / f"total_report_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.html"
     )
 
     collector.save_html(output_file)
